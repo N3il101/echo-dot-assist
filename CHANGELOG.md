@@ -2,6 +2,14 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-11-17
+
+- **The Bluetooth proxy holds 5 connections instead of 3.** Light strips and similar devices keep their connection
+  open for as long as they are on, and with 3 slots a fourth one had to take turns: two lights pushed each other out
+  of the last slot every 15–25 s, and each of their commands waited 3 to 23 s for a reconnect. With 5, four such
+  devices stay connected at once and Home Assistant still has one slot free. Amazon's own Bluetooth settings on the
+  Echo Dot 2 allow 4 connections; if a model's chip cannot take a fifth, it refuses it and Home Assistant is told.
+
 ## 2026-11-09
 
 - **The unlock and boot-root are now done by hand, as the XDA thread says, on every model.** The unlock tools

@@ -196,6 +196,19 @@ Run in this order. Each step says what it proves.
       Verified by the author on a Dot 2; `tests/fake_ha_remote_followup.py` (fails on the old core: flags [3, 3, 3]).
       Seen meanwhile, not fixed: with `-w remote` an ERROR outside a reply (e.g. nothing said) ends the run and asks for the
       next, then its RUN_END finds that new run and asks again: two starts, HA cancels the first
+- [~] Bluetooth proxy: 5 connection slots (2026-11-17, `ble.h` `BLE_MAX_CONN` 3 -> 5). A Dot 2 proxying four light strips
+      that hold their links (two ELK-BLEDOM, two Govee H617A): HA's diagnostics showed slots 3, free 0, the two Govees
+      evicting each other from the third slot ("Reconciling stale connection ... not in allocated list" every 15-25 s);
+      boot.log over 10 h: each Govee ~1550 connects, held ~10 s each, 2424 links lost while being set up (0x3e); a
+      command to the strip without the slot waited for a reconnect, 3-7 s measured here before the change (8-23 s
+      seen earlier), 0.6 s to the one holding it.  Controller: biscuit's MT8163 combo chip has no separate LE buffers
+      (ACL 4 x 1021 shared with BR/EDR, flow control per packet, so more links need no more buffers); Amazon's own
+      policy for it allows 4 LE links (`/system/etc/bluetooth/btpm_config.conf`: `BleMaxConnection = 4`), nothing
+      states the chip's own limit.  5 = four held links + one free for HA; a fifth the chip cannot take is refused at
+      LE Create Connection (`connect_next` logs "refused" and HA gets the status).  Sized by it: `conns[]` (SRV after
+      the slots), `slot_addr[]`, `send_slots` (5 packed addresses, 35 bytes of its 40).  `tests/fake_ha_bt_proxy.py`
+      now fills every slot (handles per link in the fake controller), checks HA is told 0 free with each address, and
+      that one more is refused with 0x09 without asking the controller.
 - [x] Bluetooth proxy as a feature (issue #152, 2026-11-09): setting `bluetooth_proxy` (Features, on by default, exported).
       Disabling HA's entities left the scanner: HA subscribes to raw advertisements whenever the device info carries
       proxy flags. Off: `proto_esphome.c` `bt_proxy()` leaves fields 11, 15 and 18 out of the device info, refuses
@@ -766,7 +779,7 @@ Run in this order. Each step says what it proves.
       (~240/s), so ESPHome's Wi-Fi default 30/320 it is. ~2700 advertisements from 29 devices in 15 s. A daemon killed while
       scanning leaves the chip scanning: startup drains for at most 300 ms, resets, resyncs the H4 stream.
       Connections (same day): GATT client in `ble.c`, feature flags 103 (+ active connections, remote caching: HA caches
-      the database and writes CCCDs itself), 3 slots, scanning paused while a connection is set up. Controller: LE ACL
+      the database and writes CCCDs itself), 3 slots (5 since 2026-11-17), scanning paused while a connection is set up. Controller: LE ACL
       32 x 251 bytes. Checked with aioesphomeapi against two SteamVR base stations (MTU 23: discovery of 6 services in
       1.3 s, 64-byte value by Read Blob, both connected at once, CCCD write + read back) and a BlueZ peripheral on the PC
       (MTU 517, 500-byte write + read back, 505-byte notification reassembled from 251-byte ACL packets, indications,
@@ -2003,7 +2016,7 @@ Run in this order. Each step says what it proves.
       page). Improv Wi-Fi over BLE (spec of improv-wifi.com, packets as py-improv-ble-client 2.0.1, HA's improv_ble):
       `ble.c` got the peripheral role: legacy ADV_IND 100-150 ms (flags, the 128-bit service, service data 4677 =
       state + capabilities 0x0f: 31 bytes exactly; the name in the scan response), one link a phone opens (conns[SRV],
-      outside the proxy's three slots), a GATT server (Generic Access + Improv; MTU, Find Information, Find By Type
+      outside the proxy's slots), a GATT server (Generic Access + Improv; MTU, Find Information, Find By Type
       Value, Read By Type / Group Type, Read / Blob, Write / Command, prepared writes, notifications), SMP pairing
       refused (not supported). `improv.c`: advertises when not set up (`core_oobe`) and 20 s offline (authorized), or
       set up and 600 s offline (authorization required, the action button gives 60 s); "provisioned" 60 s after, then

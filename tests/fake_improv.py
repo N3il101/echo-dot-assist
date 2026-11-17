@@ -64,9 +64,11 @@ class Controller:
                     self.rx = data if pb != 1 else self.rx + data
                     if len(self.rx) >= 4 and len(self.rx) >= 4 + (self.rx[0] | self.rx[1] << 8):
                         l, cid = struct.unpack("<HH", self.rx[:4])
-                        if cid == 4: self.att.put(self.rx[4:4 + l])
+                        if cid == 4: self.on_att(h, self.rx[4:4 + l])
                         self.rx = b""
                 else: self.buf = self.buf[1:]
+
+    def on_att(self, handle, pdu): self.att.put(pdu)                       # an ATT PDU hassmic sent on that link
 
     def command(self, op, par):
         ret = bytes(64)
