@@ -4,11 +4,15 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-11-17
 
-- **The Bluetooth proxy holds 5 connections instead of 3.** Light strips and similar devices keep their connection
-  open for as long as they are on, and with 3 slots a fourth one had to take turns: two lights pushed each other out
-  of the last slot every 15–25 s, and each of their commands waited 3 to 23 s for a reconnect. With 5, four such
-  devices stay connected at once and Home Assistant still has one slot free. Amazon's own Bluetooth settings on the
-  Echo Dot 2 allow 4 connections; if a model's chip cannot take a fifth, it refuses it and Home Assistant is told.
+- **The Bluetooth proxy holds 4 connections instead of 3.** Light strips and similar devices keep their connection
+  open for as long as they are on, and with 3 slots a fourth one had to take turns with another, each of their
+  commands waiting 3 to 23 s for a reconnect. 4 is the most the Echo Dot 2's Bluetooth chip takes: tried with 5, it
+  refused the fifth connection (Amazon's own Bluetooth settings on it say 4 too). A model whose chip takes fewer
+  refuses the same way, and Home Assistant is told.
+- **Home Assistant no longer logs "Reconciling stale connection" when a Bluetooth device ends its connection.** The
+  Echo told Home Assistant that the connection's slot was free before it said the connection had ended, and Home
+  Assistant took that for a lost message and cleaned up after it with a warning, every time. It now hears it in the
+  order an ESPHome proxy uses.
 
 ## 2026-11-09
 

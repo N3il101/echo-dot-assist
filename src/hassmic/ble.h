@@ -7,12 +7,13 @@
 #include <stdint.h>
 
 #define BLE_BATCH 16
-/* Proxy slots.  3 (ESPHome's default) let two lights that hold their links take two and left two others to evict each
- * other from the third every 15-25 s (2026-11-17, a Dot 2 with two ELK-BLEDOM and two Govee strips: each Govee
- * command reconnected first, 8-23 s).  Amazon's own policy for this controller allows 4 LE links (biscuit's
- * /system/etc/bluetooth/btpm_config.conf: BleMaxConnection = 4); 5 leaves Home Assistant one free beside four held
- * links.  A controller that cannot take one more refuses LE Create Connection (connect_next: the error goes to HA). */
-#define BLE_MAX_CONN 5
+/* Proxy slots.  3 (ESPHome's default) let two lights that hold their links take two and left two others to share the
+ * third (2026-11-17, a Dot 2 with two ELK-BLEDOM and two Govee strips: each Govee command reconnected first, 3-23 s).
+ * 4 is what the Dot 2's MT8163 controller holds: with four LE links up it refused a fifth LE Create Connection with
+ * 0x09, connection limit exceeded (measured with 5 slots, a SwitchBot as the fifth), and Amazon's own policy for it
+ * says the same (biscuit's /system/etc/bluetooth/btpm_config.conf: BleMaxConnection = 4).  A controller that takes
+ * fewer refuses the same way; connect_next passes its status on to Home Assistant. */
+#define BLE_MAX_CONN 4
 
 struct ble_adv { uint64_t addr; int rssi; unsigned addr_type, len; uint8_t data[31]; };
 

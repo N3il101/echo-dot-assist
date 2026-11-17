@@ -651,9 +651,10 @@ name and state.
 
 ## Bluetooth proxy
 
-Works like an ESPHome `bluetooth_proxy` with `active: true`: scanning, up to 5 connections, "Just Works" pairing only.
-Devices that stay connected (light strips, for instance) each hold one of the 5 for as long as they are on; with more
-of them than connections they take turns, and each command then waits for a reconnect.
+Works like an ESPHome `bluetooth_proxy` with `active: true`: scanning, up to 4 connections (the most the Echo Dot 2's
+Bluetooth chip takes), "Just Works" pairing only. Devices that stay connected (light strips, for instance) each hold
+one of the 4 for as long as they are on; with more of them than connections they take turns, and each command then
+waits for a reconnect.
 While a phone plays, the proxy stops scanning: the radio cannot do both without the music stuttering.
 
 On by default. "Bluetooth proxy" (settings page, Features) switches it off: the Echo then tells Home Assistant it is no

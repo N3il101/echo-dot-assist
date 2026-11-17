@@ -196,19 +196,26 @@ Run in this order. Each step says what it proves.
       Verified by the author on a Dot 2; `tests/fake_ha_remote_followup.py` (fails on the old core: flags [3, 3, 3]).
       Seen meanwhile, not fixed: with `-w remote` an ERROR outside a reply (e.g. nothing said) ends the run and asks for the
       next, then its RUN_END finds that new run and asks again: two starts, HA cancels the first
-- [~] Bluetooth proxy: 5 connection slots (2026-11-17, `ble.h` `BLE_MAX_CONN` 3 -> 5). A Dot 2 proxying four light strips
-      that hold their links (two ELK-BLEDOM, two Govee H617A): HA's diagnostics showed slots 3, free 0, the two Govees
-      evicting each other from the third slot ("Reconciling stale connection ... not in allocated list" every 15-25 s);
-      boot.log over 10 h: each Govee ~1550 connects, held ~10 s each, 2424 links lost while being set up (0x3e); a
-      command to the strip without the slot waited for a reconnect, 3-7 s measured here before the change (8-23 s
-      seen earlier), 0.6 s to the one holding it.  Controller: biscuit's MT8163 combo chip has no separate LE buffers
-      (ACL 4 x 1021 shared with BR/EDR, flow control per packet, so more links need no more buffers); Amazon's own
-      policy for it allows 4 LE links (`/system/etc/bluetooth/btpm_config.conf`: `BleMaxConnection = 4`), nothing
-      states the chip's own limit.  5 = four held links + one free for HA; a fifth the chip cannot take is refused at
-      LE Create Connection (`connect_next` logs "refused" and HA gets the status).  Sized by it: `conns[]` (SRV after
-      the slots), `slot_addr[]`, `send_slots` (5 packed addresses, 35 bytes of its 40).  `tests/fake_ha_bt_proxy.py`
-      now fills every slot (handles per link in the fake controller), checks HA is told 0 free with each address, and
-      that one more is refused with 0x09 without asking the controller.
+- [~] Bluetooth proxy: 4 connection slots, disconnects told before the slot (2026-11-17, `ble.h` `BLE_MAX_CONN` 3 -> 4,
+      `ble.c` `gone`).  A Dot 2 proxying four light strips that hold their links (two ELK-BLEDOM, two Govee H617A): HA's
+      diagnostics showed slots 3, free 0, ELK x2 + one Govee; boot.log over 10 h: each Govee ~1550 connects, 2424 links
+      lost while being set up (0x3e); a command to a strip without a link waited for a reconnect, 3-7 s measured
+      before the change (8-23 s seen earlier), 0.6 s to the one holding it.
+      Controller: biscuit's MT8163 combo chip has no separate LE buffers (ACL 4 x 1021 shared with BR/EDR, flow control
+      per packet, so more links need no more buffers).  With 5 slots and the four strips up, a fifth LE Create
+      Connection (a SwitchBot, from a second API client) was refused at once with 0x09, connection limit exceeded:
+      the chip holds 4 LE links, what Amazon's own policy for it says (`/system/etc/bluetooth/btpm_config.conf`:
+      `BleMaxConnection = 4`).  Not known: whether an A2DP link (a phone playing) lowers it.  Sized by it: `conns[]`
+      (SRV after the slots), `slot_addr[]`, `send_slots` (packed addresses, 7 bytes each of its 40).
+      Ordering: `free_conn` gave the slot back (slot list to HA) before `H->connection` said the link was down;
+      bleak-esphome 4.0 reconciles every slot list against the clients it holds and tore a held one missing from it
+      down as a lost link, "Reconciling stale connection ... not in allocated list" in HA's log on every disconnect.
+      `gone()` now tells the disconnect first, then frees the slot, ESPHome's order (send_device_connection, then
+      send_connections_free).  The Govees end their own links (0x13, remote) ~10 s after each connect: Govee's idle
+      timeout, which the HA component's keep-alive every 10 s does not beat (not this repository's).
+      `tests/fake_ha_bt_proxy.py` fills every slot (a handle per link in the fake controller), checks HA is told 0 free
+      with each address, one more refused with 0x09 without asking the controller, and a link the device ends told
+      before the slot list without it (fails on the old order).
 - [x] Bluetooth proxy as a feature (issue #152, 2026-11-09): setting `bluetooth_proxy` (Features, on by default, exported).
       Disabling HA's entities left the scanner: HA subscribes to raw advertisements whenever the device info carries
       proxy flags. Off: `proto_esphome.c` `bt_proxy()` leaves fields 11, 15 and 18 out of the device info, refuses

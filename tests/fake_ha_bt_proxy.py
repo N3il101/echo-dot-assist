@@ -61,10 +61,13 @@ async def ha():
     return cli
 
 
+events = []                                    # what Home Assistant heard, in order: ("free", ...) and ("link", ...)
+
+
 async def proxy_works(cli, what):
     advs, free = [], []
     cli.subscribe_bluetooth_le_raw_advertisements(lambda r: advs.extend(a.address for a in r.advertisements))
-    cli.subscribe_bluetooth_connections_free(lambda f, l, a: free.append((f, l, sorted(a))))
+    cli.subscribe_bluetooth_connections_free(lambda f, l, a: (free.append((f, l, sorted(a))), events.append(("free", f, l, sorted(a)))))
     check(await until(ctl.scanning), f"{what}: Home Assistant subscribed, the controller scans")
     ctl.advert(TAG, ADV)
     check(await until(lambda: TAG in advs), f"{what}: the controller's advertisement reaches Home Assistant")
@@ -74,7 +77,8 @@ async def proxy_works(cli, what):
 
 async def connect(cli, addr):
     up = []
-    try: await cli.bluetooth_device_connect(addr, lambda c, m, err: up.append((c, m, err)), timeout=5, feature_flags=FLAGS, address_type=0)
+    def state(c, m, err): up.append((c, m, err)); events.append(("link", addr, c, err))
+    try: await cli.bluetooth_device_connect(addr, state, timeout=5, feature_flags=FLAGS, address_type=0)
     except Exception as x: up.append(x)
     return up[:1]
 
@@ -102,6 +106,18 @@ async def main(e):
     up = await connect(cli, TAG + SLOTS)
     check(up == [(False, 0, 9)], f"one tag more: refused, connection limit exceeded: {up}")
     check(not [op for op, _ in ctl.ops[ops:] if op == OP_CONNECT], "nothing asked of the controller for it")
+
+    # ---- a device ends its link (Govee strips do after 10 s idle): Home Assistant hears it before the slot list leaves
+    # it out, ESPHome's order.  The other way round bleak-esphome found a client it still held missing from the list and
+    # tore it down as a lost link, "Reconciling stale connection" in its log on every such disconnect.
+    n = len(events)
+    ctl.event(0x05, struct.pack("<BHB", 0, ctl.handles[tags[1]], 0x13))       # Disconnection Complete, remote user
+    check(await until(lambda: free[-1][:2] == (1, SLOTS)), f"its slot is free again: {free[-1]}")
+    told = [x for x in events[n:] if x[0] == "free" or x[1] == tags[1]]
+    check(told[:1] == [("link", tags[1], False, 0x13)] and told[1:2] == [("free", 1, SLOTS, sorted(tags[:1] + tags[2:]))],
+          f"Home Assistant hears the link end first, then the slot list without it: {told}")
+    up = await connect(cli, tags[1])
+    check(up == [(True, 23, 0)] and await until(lambda: free[-1] == (0, SLOTS, sorted(tags))), f"it connects again into that slot: {up} {free[-1]}")
 
     # ---- off on the page: the links close, the scan and the tag's link end with the last client
     ops = len(ctl.ops)

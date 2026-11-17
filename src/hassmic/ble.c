@@ -229,6 +229,17 @@ static void free_conn(struct conn *c)
     ftail = &fhead; while (*ftail) ftail = &(*ftail)->next;
     credits += c->unacked;                                      /* the controller forgets them at disconnection */
     memset(c, 0, sizeof *c);
+}
+
+/* A proxy link ended or never came up: Home Assistant hears it first, then its slot is given back, the order of
+ * ESPHome's proxy (send_device_connection, then send_connections_free).  The other way round bleak-esphome (4.0) got
+ * a slot list without a client it still held and tore it down as a lost link first, "Reconciling stale connection"
+ * in HA's log on every disconnect (2026-11-17: every 10 s with two Govee strips dropping idle links). */
+static void gone(struct conn *c, int err)
+{
+    uint64_t a = c->addr;
+    free_conn(c);
+    if (H->connection) H->connection(a, 0, 0, err);
     set_slot(c, 0);
 }
 
@@ -1046,8 +1057,7 @@ static void conn_complete(const unsigned char *q, size_t n)
     if (q[0]) {                                             /* failed or cancelled */
         int err = c->cancel == 1 ? 0 : c->cancel == 2 ? HCI_E_TIMEOUT : q[0];
         fprintf(stderr, "bluetooth: connecting to %012llx failed (0x%02x)\n", (unsigned long long)c->addr, c->cancel ? err : q[0]);
-        uint64_t a = c->addr; free_conn(c);
-        if (H->connection) H->connection(a, 0, 0, err);
+        gone(c, err);
         return;
     }
     c->handle = u16(q + 1) & 0x0fff; c->state = C_MTU; c->mtu = ATT_MTU; now(&c->t);
@@ -1070,11 +1080,9 @@ static void event(const unsigned char *p, size_t n)            /* p: event code,
     case EV_CMD_STATUS: if (n >= 4) { cc_op = u16(q + 2); cc_status = q[0]; } break;
     case EV_DISCONNECT:
         if (n >= 4 && !q[0] && (c = by_handle(u16(q + 1) & 0x0fff))) {
-            int err = c->state == C_CLOSING ? 0 : q[3]; uint64_t a = c->addr;
-            fprintf(stderr, "bluetooth: %012llx disconnected (0x%02x)\n", (unsigned long long)a, q[3]);
+            fprintf(stderr, "bluetooth: %012llx disconnected (0x%02x)\n", (unsigned long long)c->addr, q[3]);
             if (c->srv) { srv_gone(c); break; }
-            free_conn(c);
-            if (H->connection) H->connection(a, 0, 0, err);
+            gone(c, c->state == C_CLOSING ? 0 : q[3]);
         }
         break;
     case EV_ENC_CHANGE: case EV_ENC_REFRESH:
@@ -1232,7 +1240,7 @@ static void op_queue(struct conn *c, int kind, const struct req *r)
  * answering */
 static int drop(struct conn *c)
 {
-    if (c->state == C_WAIT) { uint64_t a = c->addr; free_conn(c); if (H->connection) H->connection(a, 0, 0, 0); }
+    if (c->state == C_WAIT) gone(c, 0);
     else if (c->state == C_CONNECTING) { if (!c->cancel) { c->cancel = 1; if (cmd(OP_LE_CONNECT_CANCEL, NULL, 0) < 0) return -1; } }
     else if (c->state != C_CLOSING) c->close_now = 1;
     return 0;
@@ -1333,8 +1341,7 @@ static int upkeep(void)
         }
         if (c->state == C_CLOSING && ms_since(&c->t) > 5000) {    /* never confirmed: forget it */
             if (c->srv) { srv_gone(c); continue; }
-            uint64_t a = c->addr; free_conn(c);
-            if (H->connection) H->connection(a, 0, 0, 0);
+            gone(c, 0);
         }
     }
     return 0;
@@ -1356,8 +1363,7 @@ static int connect_next(void)                               /* scanning is off w
     if (st < 0) return -1;
     if (st) {
         fprintf(stderr, "bluetooth: connect to %012llx refused (0x%02x)\n", (unsigned long long)c->addr, st);
-        uint64_t a = c->addr; free_conn(c);
-        if (H->connection) H->connection(a, 0, 0, st);
+        gone(c, st);
     }
     return 0;
 }
@@ -1366,10 +1372,7 @@ static void drop_all(void)                                  /* controller lost: 
 {
     if (conns[SRV].state != C_FREE) srv_gone(&conns[SRV]);
     advertising = 0; adv_applied = -1;                      /* a new controller knows nothing of it */
-    for (int i = 0; i < BLE_MAX_CONN; i++) if (conns[i].state != C_FREE) {
-        uint64_t a = conns[i].addr; free_conn(&conns[i]);
-        if (H->connection) H->connection(a, 0, 0, HCI_E_TIMEOUT);
-    }
+    for (int i = 0; i < BLE_MAX_CONN; i++) if (conns[i].state != C_FREE) gone(&conns[i], HCI_E_TIMEOUT);
     for (struct frag *f = fhead, *n; f; f = n) { n = f->next; free(f); }
     fhead = NULL; ftail = &fhead;
     a2dp_lost();
