@@ -61,6 +61,8 @@
 #define SCAN_INTERVAL 512                       /* 320 ms, units of 0.625 ms */
 #define SCAN_WINDOW 48                          /* 30 ms */
 #define SCAN_DEAF_MS 10000                      /* scanning without one advertisement this long: the scan is restarted */
+#define SCAN_DEAD_MS 60000                      /* and this long, restarts and all: the controller is reset */
+#define MIN_INTERVAL 24                         /* 30 ms: the shortest connection interval a device is given */
 #define ATT_MTU 517                             /* what we offer; ESPHome's too */
 #define CONNECT_MS 20000                        /* then the attempt is cancelled */
 #define ATT_MS 30000                            /* ATT transaction timeout: the connection is closed after it */
@@ -69,7 +71,7 @@
 
 enum { H4_CMD = 1, H4_ACL = 2, H4_EVT = 4 };
 enum { EV_DISCONNECT = 0x05, EV_ENC_CHANGE = 0x08, EV_ENC_REFRESH = 0x30, EV_CMD_COMPLETE = 0x0e, EV_CMD_STATUS = 0x0f, EV_NUM_COMPLETED = 0x13, EV_LE_META = 0x3e };
-enum { LE_CONN_COMPLETE = 0x01, LE_ADV_REPORT = 0x02, LE_LTK_REQUEST = 0x05, LE_PK_COMPLETE = 0x08, LE_DHKEY_COMPLETE = 0x09 };
+enum { LE_CONN_COMPLETE = 0x01, LE_ADV_REPORT = 0x02, LE_CONN_UPDATE_DONE = 0x03, LE_LTK_REQUEST = 0x05, LE_PK_COMPLETE = 0x08, LE_DHKEY_COMPLETE = 0x09 };
 enum { OP_DISCONNECT = 0x0406, OP_EVENT_MASK = 0x0c01, OP_RESET = 0x0c03, OP_READ_LOCAL_CMDS = 0x1002, OP_READ_BUFFER = 0x1005, OP_LE_EVENT_MASK = 0x2001,
        OP_LE_READ_BUFFER = 0x2002, OP_LE_ADV_PARAMS = 0x2006, OP_LE_ADV_DATA = 0x2008, OP_LE_SCAN_RSP = 0x2009, OP_LE_ADV_ENABLE = 0x200a, OP_LE_SCAN_PARAMS = 0x200b, OP_LE_SCAN_ENABLE = 0x200c, OP_LE_CONNECT = 0x200d,
        OP_LE_CONNECT_CANCEL = 0x200e, OP_LE_CONN_UPDATE = 0x2013, OP_LE_START_ENC = 0x2019, OP_LE_LTK_NEG = 0x201b,
@@ -457,7 +459,22 @@ static void sig_rx(struct conn *c, const unsigned char *p, size_t n)
     unsigned char r[8];
     if (n < 4) return;
     if (p[0] == 0x12 && n >= 12) {                          /* Connection Parameter Update Request */
-        memcpy(c->upd_par, p + 4, 8); c->upd = 1;
+        /* Granted, but never faster than MIN_INTERVAL: a light that asks for 7.5 ms, times the links up at once, leaves
+         * the 30 ms scan window no air time on a chip that also does Wi-Fi, and the scan hears nothing (2026-11-17).
+         * The supervision timeout grows when the longer interval needs it. */
+        unsigned imin = u16(p + 4), imax = u16(p + 6), lat = u16(p + 8), to = u16(p + 10), need;
+        fprintf(stderr, "bluetooth: %012llx asks for interval %u-%u ms, latency %u, timeout %u ms\n",
+                (unsigned long long)c->addr, imin * 5 / 4, imax * 5 / 4, lat, to * 10);
+        if (imin < MIN_INTERVAL) imin = MIN_INTERVAL;
+        if (imax < imin) imax = imin;
+        if (imax > 3200) imax = 3200;
+        if (imin > imax) imin = imax;
+        if ((1 + lat) * imax / 4 + 1 > 3200) lat = 0;       /* timeout > (1 + latency) * interval * 2, at most 32 s */
+        need = (1 + lat) * imax / 4 + 1;
+        if (to < need) to = need;
+        if (to > 3200) to = 3200;
+        put16(c->upd_par, imin); put16(c->upd_par + 2, imax); put16(c->upd_par + 4, lat); put16(c->upd_par + 6, to);
+        c->upd = 1;
         r[0] = 0x13; r[1] = p[1]; put16(r + 2, 2); put16(r + 4, 0);
         l2cap_send(c, CID_SIG, r, 6);
     } else if (p[0] != 0x01 && p[0] != 0x13 && p[0] != 0x15 && p[0] != 0x07) {  /* not a response: Command Reject */
@@ -1104,6 +1121,9 @@ static void event(const unsigned char *p, size_t n)            /* p: event code,
         if (n < 1) break;
         if (q[0] == LE_ADV_REPORT) adv_report(q + 1, n - 1);
         else if (q[0] == LE_CONN_COMPLETE) conn_complete(q + 1, n - 1);
+        else if (q[0] == LE_CONN_UPDATE_DONE && n >= 10 && (c = by_handle(u16(q + 2) & 0x0fff)))
+            fprintf(stderr, "bluetooth: %012llx: interval %u ms, latency %u, timeout %u ms%s\n", (unsigned long long)c->addr,
+                    u16(q + 4) * 5 / 4, u16(q + 6), u16(q + 8) * 10, q[1] ? " (update refused)" : "");
         else if (q[0] == LE_LTK_REQUEST && n >= 3 && (c = by_handle(u16(q + 1) & 0x0fff))) c->ltk_neg = 1;   /* never the peripheral */
         else if (q[0] == LE_PK_COMPLETE && n >= 66) { if (!q[1]) { swap_coords(local_pk, q + 2); pk_ready = 1; } else pk_ready = -1; }
         else if (q[0] == LE_DHKEY_COMPLETE && n >= 34) dhkey_done(q[1], q + 2);
@@ -1394,7 +1414,7 @@ static void *thread(void *arg)
         have = 0; nbatch = 0;
         if (setup() < 0) { fprintf(stderr, "bluetooth: controller does not answer\n"); close(fd); fd = -1; continue; }
         said = 0;
-        int on = 0, active = 0, was_quiet = 0, deaf = 0;
+        int on = 0, active = 0, was_quiet = 0; long long silent_since = 0;
         for (;;) {
             struct req *r;
             pthread_mutex_lock(&qlock); r = qhead; qhead = NULL; qtail = &qhead; pthread_mutex_unlock(&qlock);
@@ -1422,21 +1442,22 @@ static void *thread(void *arg)
             /* The controller can stop reporting while it says it scans: no advertisements and no error until the scan is
              * restarted (Dot 2, 2026-11-17: three times in a day, 5 to 23 min each).  Home Assistant then calls the proxy
              * dead, its devices unavailable, and sends no connection through it, so nothing restarted the scan.  A room
-             * always has something advertising: SCAN_DEAF_MS of silence restarts the scan, and silence after that resets
-             * the controller, at most every 10 min (a room that really is quiet costs a reset per 10 min, not a loop). */
+             * always has something advertising: SCAN_DEAF_MS of silence restarts the scan; SCAN_DEAD_MS of it, restarts
+             * and all, resets the controller, at most every 10 min (a room that really is quiet: a reset per 10 min). */
             if (on && atomic_load(&scanning)) {
                 long long t = mono_ms();
-                if (heard_ms > scan_on_ms) deaf = 0;
+                if (!silent_since) silent_since = heard_ms > scan_on_ms ? heard_ms : t;
+                else if (heard_ms > silent_since) silent_since = heard_ms;
+                if (t - silent_since > SCAN_DEAD_MS && (!reset_ms || t - reset_ms > 600000)) {
+                    reset_ms = t;
+                    fprintf(stderr, "bluetooth: no advertisements for %d s, scan restarts and all: resetting the controller\n", SCAN_DEAD_MS / 1000);
+                    break;
+                }
                 if (t - (heard_ms > scan_on_ms ? heard_ms : scan_on_ms) > SCAN_DEAF_MS) {
-                    if (deaf++ && (!reset_ms || t - reset_ms > 600000)) {
-                        reset_ms = t;
-                        fprintf(stderr, "bluetooth: still no advertisements after a scan restart, resetting the controller\n");
-                        break;
-                    }
                     fprintf(stderr, "bluetooth: no advertisements for %d s, restarting the scan\n", SCAN_DEAF_MS / 1000);
                     if (apply(1, active) < 0) break;
                 }
-            }
+            } else silent_since = 0;
             if (!on && connect_next() < 0) break;
             int busy = a2dp_busy();
             for (int i = 0; i < NCONN; i++) busy |= conns[i].state != C_FREE;
