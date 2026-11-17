@@ -196,7 +196,7 @@ Run in this order. Each step says what it proves.
       Verified by the author on a Dot 2; `tests/fake_ha_remote_followup.py` (fails on the old core: flags [3, 3, 3]).
       Seen meanwhile, not fixed: with `-w remote` an ERROR outside a reply (e.g. nothing said) ends the run and asks for the
       next, then its RUN_END finds that new run and asks again: two starts, HA cancels the first
-- [~] Bluetooth proxy: 4 connection slots, disconnects told before the slot (2026-11-17, `ble.h` `BLE_MAX_CONN` 3 -> 4,
+- [x] Bluetooth proxy: 4 connection slots, disconnects told before the slot (2026-11-17, `ble.h` `BLE_MAX_CONN` 3 -> 4,
       `ble.c` `gone`).  A Dot 2 proxying four light strips that hold their links (two ELK-BLEDOM, two Govee H617A): HA's
       diagnostics showed slots 3, free 0, ELK x2 + one Govee; boot.log over 10 h: each Govee ~1550 connects, 2424 links
       lost while being set up (0x3e); a command to a strip without a link waited for a reconnect, 3-7 s measured
@@ -216,6 +216,12 @@ Run in this order. Each step says what it proves.
       `tests/fake_ha_bt_proxy.py` fills every slot (a handle per link in the fake controller), checks HA is told 0 free
       with each address, one more refused with 0x09 without asking the controller, and a link the device ends told
       before the slot list without it (fails on the old order).
+      On the Dot 2 (dff3310, pushed over OTA): HA's diagnostics slots 4, free 0, all four strips allocated; the ELKs
+      held their links without a drop; "Reconciling stale connection" 127 times in 17 min on the old order, 0 in the
+      8 min after with ~54 Govee disconnects.  `light.turn_on` (white, 100 %) to each Govee, 5 rounds 6 s apart:
+      median 0.44 / 0.53 s (before: 6.2 / 5.8 s), but 8.8-13.8 s when the strip had just dropped its idle link.
+      **Open:** the Govees' 10 s idle drop, for the HA component (keep-alive more often than every 10 s); whether an
+      A2DP link lowers the controller's 4.
 - [x] Bluetooth proxy as a feature (issue #152, 2026-11-09): setting `bluetooth_proxy` (Features, on by default, exported).
       Disabling HA's entities left the scanner: HA subscribes to raw advertisements whenever the device info carries
       proxy flags. Off: `proto_esphome.c` `bt_proxy()` leaves fields 11, 15 and 18 out of the device info, refuses
