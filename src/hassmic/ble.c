@@ -60,6 +60,7 @@
 
 #define SCAN_INTERVAL 512                       /* 320 ms, units of 0.625 ms */
 #define SCAN_WINDOW 48                          /* 30 ms */
+#define SCAN_DEAF_MS 10000                      /* scanning without one advertisement this long: the scan is restarted */
 #define ATT_MTU 517                             /* what we offer; ESPHome's too */
 #define CONNECT_MS 20000                        /* then the attempt is cancelled */
 #define ATT_MS 30000                            /* ATT transaction timeout: the connection is closed after it */
@@ -88,6 +89,7 @@ static int fd = -1, wake[2] = { -1, -1 };
 static const struct ble_handler *H;
 static atomic_int want_on, want_active, scanning;
 static atomic_llong quiet_until;                /* CLOCK_MONOTONIC ms: no scanning before then (ble_quiet) */
+static long long heard_ms, scan_on_ms, reset_ms; /* controller thread: last advertisement, scan (re)started, deaf reset */
 static char bdaddr[18];                         /* set once, before anything reads it */
 
 static unsigned char in[2048]; static size_t have;             /* H4 stream: reads may split or join packets */
@@ -1021,6 +1023,7 @@ static void flush_batch(void)
 static void adv_report(const unsigned char *p, size_t n)
 {
     unsigned count = n ? p[0] : 0; size_t i = 1;
+    if (count) heard_ms = mono_ms();
     for (unsigned r = 0; r < count && i + 9 <= n; r++) {
         unsigned len = p[i + 8];
         if (i + 9 + len + 1 > n || len > 31) return;
@@ -1221,7 +1224,7 @@ static int apply(int on, int active)
         if (st == 0) st = cmd(OP_LE_SCAN_ENABLE, en, 2);
         if (st < 0) return -1;
         if (st) fprintf(stderr, "bluetooth: scan refused, HCI status 0x%02x\n", st);
-        else atomic_store(&scanning, 1);
+        else { atomic_store(&scanning, 1); scan_on_ms = mono_ms(); }
     }
     return 0;
 }
@@ -1391,7 +1394,7 @@ static void *thread(void *arg)
         have = 0; nbatch = 0;
         if (setup() < 0) { fprintf(stderr, "bluetooth: controller does not answer\n"); close(fd); fd = -1; continue; }
         said = 0;
-        int on = 0, active = 0, was_quiet = 0;
+        int on = 0, active = 0, was_quiet = 0, deaf = 0;
         for (;;) {
             struct req *r;
             pthread_mutex_lock(&qlock); r = qhead; qhead = NULL; qtail = &qhead; pthread_mutex_unlock(&qlock);
@@ -1416,12 +1419,31 @@ static void *thread(void *arg)
                 on = won; active = wac;
                 if (H->scan_changed && !brief) H->scan_changed();
             }
+            /* The controller can stop reporting while it says it scans: no advertisements and no error until the scan is
+             * restarted (Dot 2, 2026-11-17: three times in a day, 5 to 23 min each).  Home Assistant then calls the proxy
+             * dead, its devices unavailable, and sends no connection through it, so nothing restarted the scan.  A room
+             * always has something advertising: SCAN_DEAF_MS of silence restarts the scan, and silence after that resets
+             * the controller, at most every 10 min (a room that really is quiet costs a reset per 10 min, not a loop). */
+            if (on && atomic_load(&scanning)) {
+                long long t = mono_ms();
+                if (heard_ms > scan_on_ms) deaf = 0;
+                if (t - (heard_ms > scan_on_ms ? heard_ms : scan_on_ms) > SCAN_DEAF_MS) {
+                    if (deaf++ && (!reset_ms || t - reset_ms > 600000)) {
+                        reset_ms = t;
+                        fprintf(stderr, "bluetooth: still no advertisements after a scan restart, resetting the controller\n");
+                        break;
+                    }
+                    fprintf(stderr, "bluetooth: no advertisements for %d s, restarting the scan\n", SCAN_DEAF_MS / 1000);
+                    if (apply(1, active) < 0) break;
+                }
+            }
             if (!on && connect_next() < 0) break;
             int busy = a2dp_busy();
             for (int i = 0; i < NCONN; i++) busy |= conns[i].state != C_FREE;
             busy |= adv_failed.tv_sec != 0;                 /* advertising refused: asked again in a while */
             struct pollfd p[2] = { { fd, POLLIN, 0 }, { wake[0], POLLIN, 0 } };
             int wait = busy ? 500 : nbatch ? 100 : -1;
+            if (on && (wait < 0 || wait > 2000)) wait = 2000;   /* the silence check above runs without traffic too */
             if (quiet && (wait < 0 || qleft < wait)) wait = (int)qleft + 1;          /* back to scanning when the pause ends */
             if (poll(p, 2, wait) < 0 && errno != EINTR) break;
             if (p[1].revents & POLLIN) { char c[16]; if (read(wake[0], c, sizeof c) < 0) break; }
